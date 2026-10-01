@@ -60,4 +60,10 @@ struct MemoryHealthTests {
         let second = try await MemoryReader.sample()
         #expect(second.totalBytes == first.totalBytes)
     }
+
+    @Test func helperProcessesBelongToOuterApp() {
+        let helper = "/Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper"
+        #expect(AppMemoryReader.appBundlePath(for: helper) == "/Applications/Google Chrome.app")
+        #expect(AppMemoryReader.appBundlePath(for: "/usr/bin/python3") == nil)
+    }
 }
