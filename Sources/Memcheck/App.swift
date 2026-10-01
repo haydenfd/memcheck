@@ -84,10 +84,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: "Memory health")
         symbol?.isTemplate = true
         statusItem.button?.image = symbol
-        statusItem.button?.title = switch health {
-        case .normal: " 🟢"
-        case .warning: " 🟠"
-        case .critical: " 🔴"
+        statusItem.button?.title = ""
+        statusItem.button?.contentTintColor = switch health {
+        case .normal: .systemGreen
+        case .warning: .systemOrange
+        case .critical: .systemRed
         }
         statusItem.button?.toolTip = "Memory pressure: \(health.rawValue.capitalized)"
 
