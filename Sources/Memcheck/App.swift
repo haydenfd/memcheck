@@ -15,23 +15,24 @@ enum MemcheckApp {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let menu = NSMenu()
     private let notifications = NotificationManager()
     private let logger = Logger(subsystem: "com.haydenfd.memcheck", category: "monitor")
     private let pressureItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let ramItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let availableItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let freeItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let compressedItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let wiredItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private let swapItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let appsTitle = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let appItems = (0..<5).map { _ in NSMenuItem(title: "", action: nil, keyEquivalent: "") }
+    private var appLabels: [(name: NSTextField, amount: NSTextField)] = []
     private let errorItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var monitor = MemoryMonitor()
     private var pollingTask: Task<Void, Never>?
     private var snapshot: MemorySnapshot?
+    private var appMemory: [AppMemory] = []
+    private var appMemoryLoaded = false
+    private var menuOpen = false
     private var health: MemoryHealthState = .normal
     private var lastError: String?
     private var loginItemError: String?
@@ -39,8 +40,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem.menu = menu
-        for item in [pressureItem, ramItem, availableItem, freeItem, compressedItem, wiredItem, swapItem, errorItem] {
-            item.isEnabled = false
+        menu.delegate = self
+        menu.autoenablesItems = false
+        for item in [pressureItem, availableItem, errorItem] {
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        appsTitle.isEnabled = false
+        appsTitle.title = "Top consumers"
+        menu.addItem(appsTitle)
+        for item in appItems {
+            let row = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 22))
+            let name = NSTextField(labelWithString: "")
+            name.frame = NSRect(x: 14, y: 1, width: 165, height: 20)
+            name.lineBreakMode = .byTruncatingTail
+            let amount = NSTextField(labelWithString: "")
+            amount.frame = NSRect(x: 181, y: 1, width: 85, height: 20)
+            amount.alignment = .right
+            row.addSubview(name)
+            row.addSubview(amount)
+            item.view = row
+            appLabels.append((name, amount))
             menu.addItem(item)
         }
         menu.addItem(.separator())
@@ -77,34 +97,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             lastError = "Memory reading unavailable"
             logger.error("Memory sample failed: \(String(describing: error))")
         }
+        if menuOpen {
+            appMemory = await AppMemoryReader.topFive()
+            appMemoryLoaded = true
+        }
         updateMenu()
     }
 
     private func updateMenu() {
-        let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: "Memory health")
-        symbol?.isTemplate = true
-        statusItem.button?.image = symbol
-        statusItem.button?.title = ""
-        statusItem.button?.contentTintColor = switch health {
+        let color: NSColor = switch health {
         case .normal: .systemGreen
         case .warning: .systemOrange
         case .critical: .systemRed
         }
+        if let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: "Memory health") {
+            let icon = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
+                symbol.draw(in: rect)
+                color.setFill()
+                rect.fill(using: .sourceIn)
+                return true
+            }
+            icon.isTemplate = false
+            statusItem.button?.image = icon
+        }
+        statusItem.button?.title = ""
+        statusItem.button?.contentTintColor = nil
         statusItem.button?.toolTip = "Memory pressure: \(health.rawValue.capitalized)"
 
-        pressureItem.title = "Memory Pressure: \(health.rawValue.capitalized)"
-        if let snapshot {
-            ramItem.title = "RAM: \(format(snapshot.usedBytes)) / \(format(snapshot.totalBytes))"
+        if let snapshot, snapshot.totalBytes > 0 {
+            let percent = Int((100 * Double(snapshot.availableBytes) / Double(snapshot.totalBytes)).rounded())
+            pressureItem.title = "Health: \(percent)%"
             availableItem.title = "Available: \(format(snapshot.availableBytes))"
-            freeItem.title = "Free: \(format(snapshot.freeBytes))"
-            compressedItem.title = "Compressed: \(format(snapshot.compressedBytes))"
-            wiredItem.title = "Wired: \(format(snapshot.wiredBytes))"
-            swapItem.title = "Swap: \(format(snapshot.swapUsedBytes))"
         } else {
-            ramItem.title = lastError ?? "Reading memory…"
+            pressureItem.title = "Health: —"
+            availableItem.title = lastError ?? "Reading memory…"
         }
-        for item in [availableItem, freeItem, compressedItem, wiredItem, swapItem] {
-            item.isHidden = snapshot == nil
+        for (index, item) in appItems.enumerated() {
+            item.isHidden = index >= max(appMemory.count, 1)
+            if index < appMemory.count {
+                let app = appMemory[index]
+                appLabels[index].name.stringValue = app.name
+                appLabels[index].amount.stringValue = format(app.bytes)
+            } else if index == 0 {
+                appLabels[index].name.stringValue = appMemoryLoaded ? "Unavailable" : "Reading…"
+                appLabels[index].amount.stringValue = ""
+            }
         }
         errorItem.title = lastError ?? ""
         errorItem.isHidden = lastError == nil || snapshot == nil
@@ -146,6 +183,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func refreshClicked() {
         loginStatus = SMAppService.mainApp.status
         Task { await refresh() }
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        menuOpen = true
+        Task { await refresh() }
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        menuOpen = false
     }
 
     @objc private func openLoginItems() {
