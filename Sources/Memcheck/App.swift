@@ -22,18 +22,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let logger = Logger(subsystem: "com.haydenfd.memcheck", category: "monitor")
     private let pressureItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let availableItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let swapItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let appsTitle = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let appItems = (0..<5).map { _ in NSMenuItem(title: "", action: nil, keyEquivalent: "") }
-    private var appLabels: [(name: NSTextField, amount: NSTextField)] = []
     private let errorItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var monitor = MemoryMonitor()
     private var pollingTask: Task<Void, Never>?
+    private var refreshing = false
     private var snapshot: MemorySnapshot?
     private var appMemory: [AppMemory] = []
+    private var appMemoryTrend = AppMemoryTrend()
     private var appMemoryLoaded = false
     private var menuOpen = false
-    private var health: MemoryHealthState = .normal
+    private var notificationState: MemoryHealthState = .normal
     private var lastError: String?
     private var loginItemError: String?
     private var loginStatus: SMAppService.Status = .notRegistered
@@ -42,25 +44,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
         menu.delegate = self
         menu.autoenablesItems = false
-        for item in [pressureItem, availableItem, errorItem] {
+        for item in [pressureItem, availableItem, swapItem, errorItem] {
             menu.addItem(item)
         }
         menu.addItem(.separator())
         appsTitle.isEnabled = false
-        appsTitle.title = "Top consumers"
+        appsTitle.title = "Top consumers (change while open)"
         menu.addItem(appsTitle)
         for item in appItems {
-            let row = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 22))
-            let name = NSTextField(labelWithString: "")
-            name.frame = NSRect(x: 14, y: 1, width: 165, height: 20)
-            name.lineBreakMode = .byTruncatingTail
-            let amount = NSTextField(labelWithString: "")
-            amount.frame = NSRect(x: 181, y: 1, width: 85, height: 20)
-            amount.alignment = .right
-            row.addSubview(name)
-            row.addSubview(amount)
-            item.view = row
-            appLabels.append((name, amount))
+            let actions = NSMenu()
+            actions.autoenablesItems = false
+            for (title, action) in [
+                ("Quit", #selector(quitApp(_:))),
+                ("Force Quit…", #selector(forceQuitApp(_:))),
+            ] {
+                let actionItem = actions.addItem(withTitle: title, action: action, keyEquivalent: "")
+                actionItem.target = self
+            }
+            item.submenu = actions
             menu.addItem(item)
         }
         menu.addItem(.separator())
@@ -84,13 +85,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func refresh() async {
+        guard !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false }
         do {
             let current = try await MemoryReader.sample()
             snapshot = current
             lastError = nil
             let next = monitor.update(current, at: .now)
-            if next != health {
-                health = next
+            if next != notificationState {
+                notificationState = next
                 notifications.entered(next)
             }
         } catch {
@@ -105,10 +109,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateMenu() {
-        let color: NSColor = switch health {
-        case .normal: .systemGreen
-        case .warning: .systemOrange
-        case .critical: .systemRed
+        let pressure = lastError == nil ? snapshot?.systemPressure : nil
+        let color: NSColor = switch pressure {
+        case .some(.normal): .systemGreen
+        case .some(.warning): .systemOrange
+        case .some(.critical): .systemRed
+        case nil: .secondaryLabelColor
         }
         if let symbol = NSImage(systemSymbolName: "memorychip", accessibilityDescription: "Memory health") {
             let icon = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
@@ -122,25 +128,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         statusItem.button?.title = ""
         statusItem.button?.contentTintColor = nil
-        statusItem.button?.toolTip = "Memory pressure: \(health.rawValue.capitalized)"
+        statusItem.button?.toolTip = pressure.map { "Memory pressure: \($0.rawValue.capitalized)" }
+            ?? "Memory pressure unavailable"
 
-        if let snapshot, snapshot.totalBytes > 0 {
-            let percent = Int((100 * Double(snapshot.availableBytes) / Double(snapshot.totalBytes)).rounded())
-            pressureItem.title = "Health: \(percent)%"
-            availableItem.title = "Available: \(format(snapshot.availableBytes))"
+        if let snapshot, let pressure {
+            pressureItem.title = "Memory Pressure: \(pressure.rawValue.capitalized)"
+            availableItem.title = "Available (estimated): \(format(snapshot.availableBytes))"
+            swapItem.title = "Swap Used: \(format(snapshot.swapUsedBytes))"
         } else {
-            pressureItem.title = "Health: —"
+            pressureItem.title = "Memory Pressure: —"
             availableItem.title = lastError ?? "Reading memory…"
+            swapItem.title = "Swap Used: —"
         }
         for (index, item) in appItems.enumerated() {
             item.isHidden = index >= max(appMemory.count, 1)
             if index < appMemory.count {
                 let app = appMemory[index]
-                appLabels[index].name.stringValue = app.name
-                appLabels[index].amount.stringValue = format(app.bytes)
+                let change = appMemoryTrend.change(for: app)
+                let changeLabel = change == 0 ? "" : " (\(change > 0 ? "+" : "−")\(format(change.magnitude)))"
+                item.title = "\(app.name) — \(format(app.bytes))\(changeLabel)"
+                item.isEnabled = true
+                if let actions = item.submenu?.items {
+                    actions.forEach { $0.representedObject = app.bundlePath }
+                    let canQuit = runningApp(for: actions[0]) != nil
+                    actions[0].isEnabled = canQuit
+                    actions[1].isEnabled = canQuit
+                }
             } else if index == 0 {
-                appLabels[index].name.stringValue = appMemoryLoaded ? "Unavailable" : "Reading…"
-                appLabels[index].amount.stringValue = ""
+                item.title = appMemoryLoaded ? "Unavailable" : "Reading…"
+                item.isEnabled = false
             }
         }
         errorItem.title = lastError ?? ""
@@ -187,6 +203,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         menuOpen = true
+        appMemory = []
+        appMemoryLoaded = false
+        appMemoryTrend.reset()
+        updateMenu()
         Task { await refresh() }
     }
 
@@ -196,6 +216,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openLoginItems() {
         SMAppService.openSystemSettingsLoginItems()
+    }
+
+    private func runningApp(for item: NSMenuItem) -> NSRunningApplication? {
+        guard let path = item.representedObject as? String,
+              !path.hasPrefix("/System/") else { return nil }
+        let matches = NSWorkspace.shared.runningApplications.filter {
+            $0.bundleURL?.standardizedFileURL.path == URL(fileURLWithPath: path).standardizedFileURL.path
+                && !$0.isTerminated
+                && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    @objc private func quitApp(_ item: NSMenuItem) {
+        guard let app = runningApp(for: item), app.terminate() else {
+            showAppActionError()
+            return
+        }
+        Task { await refresh() }
+    }
+
+    @objc private func forceQuitApp(_ item: NSMenuItem) {
+        guard let app = runningApp(for: item) else {
+            showAppActionError()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Force quit \(app.localizedName ?? "this app")?"
+        alert.informativeText = "Unsaved changes in this app may be lost."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Force Quit")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard app.isTerminated || app.forceTerminate() else {
+            showAppActionError()
+            return
+        }
+        Task { await refresh() }
+    }
+
+    private func showAppActionError() {
+        let alert = NSAlert()
+        alert.messageText = "App action unavailable"
+        alert.informativeText = "The app may have closed or macOS may have denied the request."
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc private func quitClicked() {

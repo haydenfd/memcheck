@@ -18,7 +18,8 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             do {
                 _ = try await center.requestAuthorization(options: [.alert, .sound])
             } catch {
-                logger.error("Notification permission failed: \(error.localizedDescription, privacy: .public)")
+                let status = await center.notificationSettings().authorizationStatus.rawValue
+                logger.error("Notification permission failed (status \(status)): \(error.localizedDescription, privacy: .public)")
             }
         }
     }
@@ -26,16 +27,24 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     func entered(_ state: MemoryHealthState) {
         if state == .normal {
             notifiedStates.removeAll()
-            return
+        } else {
+            guard notifiedStates.insert(state).inserted else { return }
         }
-        guard notifiedStates.insert(state).inserted else { return }
 
         let content = UNMutableNotificationContent()
-        content.title = state == .critical ? "Memory pressure is critical" : "Memory pressure is elevated"
-        content.body = state == .critical
-            ? "Consider closing memory-intensive applications."
-            : "Some applications may begin using significant swap."
-        content.sound = .default
+        switch state {
+        case .normal:
+            content.title = "Memory looks good again"
+            content.body = "Memory pressure has returned to normal."
+        case .warning:
+            content.title = "Memory pressure is high"
+            content.body = "Quit apps you don't need if your Mac feels slow."
+            content.sound = .default
+        case .critical:
+            content.title = "Memory pressure is critical"
+            content.body = "Quit memory-heavy apps now to reduce slowdowns."
+            content.sound = .default
+        }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         Task {
             do {
@@ -51,6 +60,6 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        completionHandler(notification.request.content.sound == nil ? [.banner] : [.banner, .sound])
     }
 }

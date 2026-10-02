@@ -7,7 +7,6 @@ enum MemoryHealthState: String, Sendable {
 }
 
 struct MemoryHealthEvaluator {
-    static let warningPersistence: Duration = .seconds(20)
     static let recoveryPersistence: Duration = .seconds(30)
 
     private(set) var state: MemoryHealthState = .normal
@@ -19,8 +18,8 @@ struct MemoryHealthEvaluator {
             return state
         }
 
-        if observed == .critical {
-            state = .critical
+        if observed == .critical || (state == .normal && observed == .warning) {
+            state = observed
             pending = nil
             return state
         }
@@ -30,8 +29,7 @@ struct MemoryHealthEvaluator {
             return state
         }
 
-        let required = state == .normal ? Self.warningPersistence : Self.recoveryPersistence
-        if let pending, now - pending.since >= required {
+        if let pending, now - pending.since >= Self.recoveryPersistence {
             state = observed
             self.pending = nil
         }
