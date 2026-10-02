@@ -1,6 +1,6 @@
 # Memcheck
 
-Memcheck lives in your Mac’s menu bar, checks memory every three seconds, and starts when you log in. The chip shows green for healthy memory, orange for a warning, and red for critical pressure. Click it to see what the health state means, available memory, and the five apps using the most memory right now.
+Memcheck lives in your Mac’s menu bar, checks memory every three seconds, and starts when you log in. The chip shows green, orange, or red for macOS memory pressure. Click it to see estimated available memory, swap used, and the five apps using the most memory right now. App actions include Quit and Force Quit; these are disabled for system apps.
 
 ## Build and run
 
@@ -16,10 +16,11 @@ macOS may ask you to allow notifications or approve Memcheck in Login Items. If 
 
 ## Memory health
 
-Memcheck follows the Mac’s memory pressure and fresh swap use. A high RAM percentage alone is not a warning because macOS uses spare RAM for cache. Warnings need 20 seconds of elevated pressure; critical pressure shows immediately. Recovery takes 30 seconds. Alerts repeat only after memory returns to normal.
+Memcheck displays macOS memory pressure directly. Available RAM and swap used are separate readings, not health scores. With notifications allowed in macOS, warning and critical pressure send native banners immediately; after 30 seconds of normal pressure, a recovery banner confirms things are good again. Alerts repeat only after memory returns to normal.
 
 App amounts combine each app's processes, including helpers such as browser renderers. They use macOS physical footprint, so they may differ from Activity Monitor's figures. System processes outside apps are not listed.
+While the menu is open, each app shows its memory change since the first reading in that menu session.
 
-The menu's Health percentage is available memory divided by total RAM. The menu-bar color follows macOS memory pressure, so a lower percentage can still be green when memory is reclaimable.
+The menu's available RAM estimate includes free, inactive, and speculative memory. It may differ from Activity Monitor's memory figures. Force Quit asks for confirmation because unsaved changes may be lost.
 
 App code is in `Sources/Memcheck`, tests are in `Tests/MemcheckTests`, and build scripts are in `scripts`.

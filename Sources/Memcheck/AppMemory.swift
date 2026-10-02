@@ -4,6 +4,21 @@ import Foundation
 struct AppMemory: Sendable {
     let name: String
     let bytes: UInt64
+    let bundlePath: String
+}
+
+struct AppMemoryTrend {
+    private var startingBytes: [String: UInt64] = [:]
+
+    mutating func reset() {
+        startingBytes.removeAll()
+    }
+
+    mutating func change(for app: AppMemory) -> Int64 {
+        let start = startingBytes[app.bundlePath] ?? app.bytes
+        startingBytes[app.bundlePath] = start
+        return Int64(clamping: app.bytes) - Int64(clamping: start)
+    }
 }
 
 enum AppMemoryReader {
@@ -32,7 +47,8 @@ enum AppMemoryReader {
             totals[bundlePath, default: 0] += usage.ri_phys_footprint
         }
         return totals.sorted { $0.value > $1.value }.prefix(5).map { path, bytes in
-            AppMemory(name: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent, bytes: bytes)
+            AppMemory(name: URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent,
+                bytes: bytes, bundlePath: path)
         }
     }
 

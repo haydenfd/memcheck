@@ -78,18 +78,9 @@ enum MemoryReader {
 }
 
 struct MemoryMonitor {
-    static let significantSwapGrowthBytes: UInt64 = 64 * 1_048_576
-
     private(set) var evaluator = MemoryHealthEvaluator()
-    private var previousSwapUsed: UInt64?
 
     mutating func update(_ snapshot: MemorySnapshot, at now: ContinuousClock.Instant) -> MemoryHealthState {
-        let growingSwap = previousSwapUsed.map {
-            snapshot.swapUsedBytes > $0 && snapshot.swapUsedBytes - $0 >= Self.significantSwapGrowthBytes
-        } ?? false
-        previousSwapUsed = snapshot.swapUsedBytes
-        let observed: MemoryHealthState = snapshot.systemPressure == .normal && growingSwap
-            ? .warning : snapshot.systemPressure
-        return evaluator.observe(observed, at: now)
+        evaluator.observe(snapshot.systemPressure, at: now)
     }
 }
